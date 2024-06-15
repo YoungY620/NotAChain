@@ -52,27 +52,20 @@ func (f *Raft) Apply(l *raft.Log) interface{} {
 	}
 	log.Printf("Receive a msg: %v, len(queue)=%d, epoch=%d", msg, len(f.queue), f.epoch)
 	f.queue = append(f.queue, msg)
-	if len(f.queue) == f.epoch*BLOCK_SIZE {
+	for len(f.queue) >= f.epoch*BLOCK_SIZE {
 		consensusComplete := time.Now()
 		log.Printf("performance statistic: consensusComplete[%d]: %v", f.epoch, consensusComplete)
 
 		indexFrom := (f.epoch - 1) * BLOCK_SIZE
+		go func(localEpoch int) {
+			abortedTxs := f.commiter.CommitBlock(common.CommitMsg{
+				Batch:  f.queue[indexFrom : indexFrom+BLOCK_SIZE],
+				Height: localEpoch,
+			})
 
-		batch := make([]common.Transaction, BLOCK_SIZE)
-		wg := &sync.WaitGroup{}
-		wg.Add(BLOCK_SIZE)
-		for i, m := range f.queue[indexFrom : indexFrom+BLOCK_SIZE] {
-			go func(idx int, msg *common.TxDefMsg) {
-				defer wg.Done()
-				batch[idx] = *utils.TxDefMsgToTransaction(msg)
-			}(i, m)
-			//log.Printf("Receive a transaction: %v", batch[i])
-		}
-		wg.Wait()
-		go f.commiter.CommitBlock(common.CommitMsg{
-			Batch:  batch,
-			Height: f.epoch,
-		})
+			f.queue = append(abortedTxs, f.queue...)
+		}(f.epoch)
+
 		f.epoch++
 		consensusStart := time.Now()
 		log.Printf("performance statistic: consensusStart[%d]: %v", f.epoch, consensusStart)

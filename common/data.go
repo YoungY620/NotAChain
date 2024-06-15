@@ -41,8 +41,8 @@ func NewTransaction(idxFrom int, idxTo int) *Transaction {
 }
 
 type Block struct {
-	Header BlockHeader   `json:"header"`
-	Txs    []Transaction `json:"txs"`
+	Header BlockHeader `json:"header"`
+	Txs    []TxDefMsg  `json:"txs"`
 }
 
 type BlockHeader struct {
@@ -57,6 +57,6 @@ type RWSet struct {
 }
 
 type CommitMsg struct {
-	Batch  []Transaction
+	Batch  []*TxDefMsg
 	Height int
 }

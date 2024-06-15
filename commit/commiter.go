@@ -1,6 +1,7 @@
 package commit
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb"
 	"log"
 	"neochain/common"
+	"neochain/utils"
 	"neochain/vm"
 	"sync"
 	"time"
@@ -18,7 +20,8 @@ type Committer struct {
 	BlockDB *leveldb.DB
 	StateDB *leveldb.DB
 
-	mutex sync.Mutex
+	commitMutex sync.Mutex
+	wmapMutex   sync.Mutex
 }
 
 func NewCommitter(chainID string) *Committer {
@@ -47,16 +50,16 @@ func NewCommitter(chainID string) *Committer {
 	return commiter
 }
 
-func (c *Committer) CommitBlock(msg common.CommitMsg) {
+func (c *Committer) CommitBlock(msg common.CommitMsg) []*common.TxDefMsg {
 	log.Printf("performance statistic: exeStart[%d]: %v", msg.Height, time.Now())
-	err, lastBlock, engine := c.executeBlock(msg)
+	abortedTxs, successTxs, err, lastBlock, engine := c.executeBlock(msg)
 	if err != nil {
 		log.Fatalf("failed to execute block: %s", err)
 	}
 	log.Printf("performance statistic: exeEnd[%d]: %v", msg.Height, time.Now())
 
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.commitMutex.Lock()
+	defer c.commitMutex.Unlock()
 
 	log.Printf("performance statistic: commitStart[%d]: %v", msg.Height, time.Now())
 	block := &common.Block{
@@ -65,10 +68,12 @@ func (c *Committer) CommitBlock(msg common.CommitMsg) {
 			PrevBlockHash: lastBlock.Header.BlockHash,
 			BlockHash:     "",
 		},
-		Txs: msg.Batch,
+		Txs: successTxs,
 	}
 	c.storeBlock(msg.Height, block, engine.Context.Memory.Cell)
 	log.Printf("performance statistic: commitEnd[%d]: %v", msg.Height, time.Now())
+
+	return abortedTxs
 }
 
 func (c *Committer) storeBlock(height int, block *common.Block, state []byte) {
@@ -90,13 +95,29 @@ func calBlockHash(block *common.Block) []byte {
 	if err != nil {
 		log.Fatalf("failed to marshal block: %s", err)
 	}
-	hash := sha256.New()
-	hash.Write(blockBytes)
-	block.Header.BlockHash = hex.EncodeToString(hash.Sum(nil))
+	block.Header.BlockHash = hex.EncodeToString(calHash(blockBytes))
 	return blockBytes
 }
 
-func (c *Committer) executeBlock(msg common.CommitMsg) (error, common.Block, *vm.VM) {
+func calHash(blockBytes []byte) []byte {
+	hash := sha256.New()
+	hash.Write(blockBytes)
+	return (hash.Sum(nil))
+}
+
+func calTxHash(uid int, txDef *common.TxDefMsg) []byte {
+	uidBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(uidBytes, uint64(uid))
+	txDefBytes, err := json.Marshal(*txDef)
+	if err != nil {
+		log.Fatalf("failed to marshal txDef in calTxHash: %s", err)
+		return nil
+	}
+	allBytes := append(txDefBytes, uidBytes...)
+	return calHash(allBytes)
+}
+
+func (c *Committer) executeBlock(msg common.CommitMsg) ([]*common.TxDefMsg, []common.TxDefMsg, error, common.Block, *vm.VM) {
 	lastHeightBin := make([]byte, 8)
 	if msg.Height == 0 {
 		log.Fatalf("In CommitBlock: Height must greater than 0.")
@@ -118,11 +139,57 @@ func (c *Committer) executeBlock(msg common.CommitMsg) (error, common.Block, *vm
 	}
 	engine := vm.NewVM(snapshot)
 
-	for _, tx := range msg.Batch {
-		innerErr := engine.ExecuteTransaction(&tx)
-		if innerErr != nil {
-			log.Fatalf("failed to execute transaction: %s", err)
-		}
+	successTxs := make([]common.TxDefMsg, 0)
+	abortedTxs := make([]*common.TxDefMsg, 0)
+
+	wmap := make(map[int][]byte)
+	wg := sync.WaitGroup{}
+	wg.Add(len(msg.Batch))
+	mu := sync.Mutex{}
+	for i, txDef := range msg.Batch {
+		go func(localTxDef *common.TxDefMsg, localI int) {
+			defer wg.Done()
+			selfHash := calTxHash(localI, localTxDef)
+			mu.Lock()
+			defer mu.Unlock()
+
+			if val, ok := wmap[localTxDef.IdxTo]; !ok || bytes.Compare(val, selfHash) > 0 {
+				wmap[localTxDef.IdxTo] = selfHash
+			}
+		}(txDef, i)
 	}
-	return err, lastBlock, engine
+	wg.Wait() // 第一阶段预执行同步
+	wg.Add(len(msg.Batch))
+	for i, txDef := range msg.Batch {
+		go func(localI int, localTxDef *common.TxDefMsg) {
+			defer wg.Done()
+			selfHash := calTxHash(localI, localTxDef)
+			if c.checkConcurrent(wmap, localTxDef, selfHash, abortedTxs) {
+				return
+			}
+
+			tx := utils.TxDefMsgToTransaction(localTxDef)
+			innerErr := engine.ExecuteTransaction(tx)
+			if innerErr != nil {
+				log.Fatalf("failed to execute transaction: %s", err)
+			}
+			successTxs = append(successTxs, *localTxDef)
+		}(i, txDef)
+	}
+	wg.Wait() // 第二阶段冲突处理同步
+	return nil, successTxs, err, lastBlock, engine
+}
+
+func (c *Committer) checkConcurrent(wmap map[int][]byte, localTxDef *common.TxDefMsg, selfHash []byte, abortedTxs []*common.TxDefMsg) bool {
+	c.wmapMutex.Lock()
+	defer c.wmapMutex.Unlock()
+	if val, ok := wmap[localTxDef.IdxTo]; ok && bytes.Compare(val, selfHash) < 0 {
+		abortedTxs = append(abortedTxs, localTxDef)
+		return true
+	}
+	if val, ok := wmap[localTxDef.IdxFrom]; ok && bytes.Compare(val, selfHash) < 0 {
+		abortedTxs = append(abortedTxs, localTxDef)
+		return true
+	}
+	return false
 }
