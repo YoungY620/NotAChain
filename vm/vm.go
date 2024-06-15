@@ -2,10 +2,10 @@ package vm
 
 import (
 	"errors"
+	"math"
 	"math/rand"
 	"neochain/common"
 	"neochain/utils"
-	"time"
 )
 
 type OpAction = func(*Context, []interface{}) error
@@ -185,6 +185,8 @@ func dup(ctx *Context, args []interface{}) error {
 }
 
 func sleep(ctx *Context, args []interface{}) error {
-	time.Sleep(time.Millisecond * time.Duration(300*rand.Float32()))
+	for i := 0; i < 300000; i++ {
+		_ = math.Atan(math.Sqrt(float64(rand.Int63())))
+	}
 	return nil
 }

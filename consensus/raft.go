@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"neochain/commit"
 	"neochain/common"
 	"neochain/utils"
@@ -26,6 +27,8 @@ type Raft struct {
 	queue    []*common.TxDefMsg
 	epoch    int
 	commiter *commit.Committer
+
+	refreshTime time.Time
 }
 
 var _ raft.FSM = &Raft{}
@@ -41,9 +44,6 @@ func NewRaftEngine(commiter *commit.Committer) *Raft {
 // Apply 最终效果只是增加一个word
 func (f *Raft) Apply(l *raft.Log) interface{} {
 
-	f.mtx.Lock()
-	defer f.mtx.Unlock()
-
 	w := string(l.Data)
 	msg, err := utils.JsonToTxDefMsg(w)
 	if err != nil {
@@ -51,26 +51,48 @@ func (f *Raft) Apply(l *raft.Log) interface{} {
 		return fmt.Errorf("TxDefMsg deserialization err: %v", err)
 	}
 	log.Printf("Receive a msg: %v, len(queue)=%d, epoch=%d", msg, len(f.queue), f.epoch)
+
+	return f.doApply(msg)
+}
+
+func (f *Raft) doApply(msg *common.TxDefMsg) interface{} {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
 	f.queue = append(f.queue, msg)
-	for len(f.queue) >= f.epoch*BLOCK_SIZE {
+	if len(f.queue) == 1 {
 		consensusComplete := time.Now()
-		log.Printf("performance statistic: consensus[e][%d]: %v", f.epoch, consensusComplete)
-
-		indexFrom := (f.epoch - 1) * BLOCK_SIZE
-		go func(localEpoch int) {
-			abortedTxs := f.commiter.CommitBlock(common.CommitMsg{
-				Batch:  f.queue[indexFrom : indexFrom+BLOCK_SIZE],
-				Height: localEpoch,
-			})
-
-			f.queue = append(abortedTxs, f.queue...)
-		}(f.epoch)
-
-		f.epoch++
-		consensusStart := time.Now()
-		log.Printf("performance statistic: consensus[s][%d]: %v", f.epoch, consensusStart)
+		log.Printf("performance statistic: consensus[s][%d]: %v", f.epoch, consensusComplete.UnixNano())
+	}
+	for len(f.queue) >= f.epoch*BLOCK_SIZE {
+		f.wrapBlock()
 	}
 	return nil
+}
+
+func (f *Raft) wrapBlock() {
+	consensusComplete := time.Now()
+	log.Printf("performance statistic: consensus[e][%d]: %v", f.epoch, consensusComplete.UnixNano())
+
+	f.refreshTime = time.Now()
+	indexFrom := (f.epoch - 1) * BLOCK_SIZE
+	if indexFrom == int(math.Min(float64(indexFrom+BLOCK_SIZE), float64(len(f.queue)))) {
+		return
+	}
+	go func(localEpoch int) {
+		abortedTxs := f.commiter.CommitBlock(common.CommitMsg{
+			Batch:  f.queue[indexFrom:int(math.Min(float64(indexFrom+BLOCK_SIZE), float64(len(f.queue))))],
+			Height: localEpoch,
+		})
+		for _, abortedTx := range abortedTxs {
+			f.doApply(abortedTx)
+		}
+	}(f.epoch)
+
+	f.epoch++
+	consensusStart := time.Now()
+	log.Printf("performance statistic: consensus[s][%d]: %v", f.epoch, consensusStart.UnixNano())
+	f.refreshTime = consensusStart
 }
 
 func (f *Raft) Snapshot() (raft.FSMSnapshot, error) {

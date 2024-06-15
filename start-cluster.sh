@@ -25,14 +25,14 @@ go install github.com/Jille/raftadmin/cmd/raftadmin@latest
 
 # 等待节点启动
 echo "waiting for the cluster to start"
-sleep 5
+sleep 2
 
 # 配置raft节点
 raftadmin localhost:50051 add_voter nodeB localhost:50052 0
 raftadmin --leader multi:///localhost:50051,localhost:50052 add_voter nodeC localhost:50053 0
 
 # 等待用户按回车继续
-read -p "Press enter to continue"
+#read -p "Press enter to continue"
 
 # 运行hammer.go
 go run hammer/hammer.go

@@ -51,17 +51,17 @@ func NewCommitter(chainID string) *Committer {
 }
 
 func (c *Committer) CommitBlock(msg common.CommitMsg) []*common.TxDefMsg {
-	log.Printf("performance statistic: exe[s][%d]: %v", msg.Height, time.Now())
+	c.commitMutex.Lock()
+	defer c.commitMutex.Unlock()
+
+	log.Printf("performance statistic: exe[s][%d]: %v", msg.Height, time.Now().UnixNano())
 	abortedTxs, successTxs, err, lastBlock, engine := c.executeBlock(msg)
 	if err != nil {
 		log.Fatalf("failed to execute block: %s", err)
 	}
-	log.Printf("performance statistic: exe[e][%d]: %v", msg.Height, time.Now())
+	log.Printf("performance statistic: exe[e][%d]: %v", msg.Height, time.Now().UnixNano())
 
-	c.commitMutex.Lock()
-	defer c.commitMutex.Unlock()
-
-	log.Printf("performance statistic: commit[s][%d]: %v", msg.Height, time.Now())
+	log.Printf("performance statistic: commit[s][%d]: %v", msg.Height, time.Now().UnixNano())
 	block := &common.Block{
 		Header: common.BlockHeader{
 			Height:        msg.Height,
@@ -71,7 +71,7 @@ func (c *Committer) CommitBlock(msg common.CommitMsg) []*common.TxDefMsg {
 		Txs: successTxs,
 	}
 	c.storeBlock(msg.Height, block, engine.Context.Memory.Cell)
-	log.Printf("performance statistic: commit[e][%d]: %v", msg.Height, time.Now())
+	log.Printf("performance statistic: commit[e][%d]: %v", msg.Height, time.Now().UnixNano())
 
 	return abortedTxs
 }
