@@ -32,7 +32,7 @@ raftadmin localhost:50051 add_voter nodeB localhost:50052 0
 raftadmin --leader multi:///localhost:50051,localhost:50052 add_voter nodeC localhost:50053 0
 
 # 等待用户按回车继续
-read -p "Press enter to continue"
+#read -p "Press enter to continue"
 
 # 运行hammer.go
 go run hammer/hammer.go
@@ -41,3 +41,4 @@ go run hammer/hammer.go
 #raftadmin --leader multi:///localhost:50051,localhost:50052,localhost:50053 leadership_transfer
 
 # 等待所有后台进程完成
+wait

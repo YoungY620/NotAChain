@@ -52,9 +52,13 @@ func (f *Raft) Apply(l *raft.Log) interface{} {
 	}
 	log.Printf("Receive a msg: %v, len(queue)=%d, epoch=%d", msg, len(f.queue), f.epoch)
 	f.queue = append(f.queue, msg)
+	if len(f.queue) == 1 {
+		consensusComplete := time.Now()
+		log.Printf("performance statistic: consensus[s][%d]: %v", f.epoch, consensusComplete.UnixNano())
+	}
 	if len(f.queue) == f.epoch*BLOCK_SIZE {
 		consensusComplete := time.Now()
-		log.Printf("performance statistic: consensusComplete[%d]: %v", f.epoch, consensusComplete)
+		log.Printf("performance statistic: consensus[e][%d]: %v", f.epoch, consensusComplete.UnixNano())
 
 		indexFrom := (f.epoch - 1) * BLOCK_SIZE
 
@@ -75,7 +79,7 @@ func (f *Raft) Apply(l *raft.Log) interface{} {
 		})
 		f.epoch++
 		consensusStart := time.Now()
-		log.Printf("performance statistic: consensusStart[%d]: %v", f.epoch, consensusStart)
+		log.Printf("performance statistic: consensus[s][%d]: %d", f.epoch, consensusStart.UnixNano())
 	}
 	return nil
 }
@@ -141,8 +145,8 @@ type RpcInterface struct {
 }
 
 func (r RpcInterface) AddWord(ctx context.Context, req *pb.AddWordRequest) (*pb.AddWordResponse, error) {
-	start := time.Now()
-	log.Printf("performance statistic: Start time: %v AddWord req: %v", start, req)
+	//start := time.Now()
+	//log.Printf("performance statistic: Start time: %v AddWord req: %v", start, req)
 
 	//time.Sleep(time.Millisecond * time.Duration(300*rand.Float32())) // consensus is too fast
 
